@@ -1,0 +1,411 @@
+---
+title: "Code for 'Pandemic Pivots for Older Volunteers: Online Tutoring and Pen Pal Programs'"
+author: "Peter Sun"
+date: "September, 2022"
+output:
+  html_document:
+    number_sections: no
+    toc: yes
+    toc_depth: 3
+---
+
+# Import Packages
+
+```{r warning=F, error=F, message=F}
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(readxl)
+library(glue)
+library(viridis)
+library(lubridate)
+library(ggsci)
+library(scales)
+library(ggthemes)
+library(kableExtra)
+library(lsr)
+library(chisq.posthoc.test)
+library(tableone)
+library(mice)
+```
+
+# Import Data and Labels
+
+```{r warning=F, error=F, message=F}
+# Import the following data:
+# (1) df =  the study sample (respondents who completed both pre and post)
+# (2) df.pre.only = respondents who only completed pre
+# (3) df.codebook = labels for analytical variables
+# (4) df.imputed = 55 imputations using mice
+load("private/data.Rdata")
+```
+
+# Inspect Variables
+
+This dataset contains 61 rows (the study sample size) and 68 columns/variables.
+
+```{r warning=F, error=F, message=F}
+dim(df)
+```
+
+The variables are categorized as follows:
+
+- 3 administrative variables (prefixed *admin_*)
+- 20 recoded variables for bivariate analyses (prefixed *analysis_*)
+- 4 variables corresponding to open-ended questions (prefixed *openended_*)
+- 14 original pre-test and post-test variables prior to recoding (prefixed *original_*)
+- 9 pre-test survey demographic variables for Table 1 (prefixed *tab1_*)
+- 11 post-test survey outcome variables for Table 2 (prefixed *tab2_*)
+- 7 variables from the parent study as multiple imputation predictors (prefixed *imp_*)
+
+```{r warning=F, error=F, message=F}
+df %>%
+  names() %>%
+  str_extract("[:alnum:]+") %>%
+  enframe(value = "variable_type") %>%
+  count(variable_type) %>%
+  janitor::adorn_totals()
+```
+
+The 20 variables used for the quantitative bivariate analyses are as follows:
+
+```{r}
+df %>%
+  select(starts_with("analysis_")) %>%
+  names()
+```
+
+# Missing Data
+
+Missing data for the 20 variables (for bivariate analyses) in this study range from 1.6% (1 out of 61 responses missing) to 37.7% (23 out of 61 responses missing).
+
+```{r warning=F, error=F, message=F}
+df %>%
+  select(admin_id, starts_with("analysis")) %>%
+  mutate(across(-admin_id, ~is.na(.))) %>%
+  pivot_longer(-admin_id) %>%
+  count(name, value) %>%
+  pivot_wider(names_from = "value", values_from = "n") %>%
+  setNames(c("variable", "nonmissing", "missing")) %>%
+  mutate(pct_missing = missing/(nonmissing+missing)) %>%
+  arrange(desc(pct_missing)) %>%
+  mutate(n = row_number()) %>%
+  relocate(n) %>%
+  mutate(pct_missing = percent(pct_missing)) %>%
+  kbl() %>%
+  kable_paper()
+```
+
+For the bivariate models, missing data ranges from 6.6% to 54.1%:
+
+```{r warning=F, error=F, message=F}
+df.tmp <- tibble(IV = character(0), DV = character(0), pct_missing = numeric(0))
+iv <- df %>% select(starts_with("analysis_pre_")) %>% names()
+dv <- df %>% select(starts_with("analysis_post_")) %>% names()
+for(d in dv) {
+  for(i in iv) {
+    n <- df %>%
+      select(i, d) %>%
+      drop_na() %>%
+      nrow()
+    df.tmp <- df.tmp%>%
+      add_row(IV = i, DV = d, pct_missing = (61 - n) / 61)
+  }
+}
+mean(df.tmp$pct_missing) # Mean % Missing
+df.tmp %>%
+  arrange(desc(pct_missing)) %>%
+  mutate(pct_missing = percent(pct_missing, accuracy = 0.1)) %>%
+  kbl() %>%
+  kable_paper()
+```
+
+# Multiple Imputation
+
+Therefore, 55 imputations is appropriate for this study.
+
+```{r}
+# # Select study variables for imputation
+# # And drop empty factor levels for mice to work
+# df.for.imputation <- df %>%
+#   select(starts_with("analysis"), starts_with("imp")) %>%
+#   mutate(across(where(is.factor), ~fct_drop(.)))
+# names(df.for.imputation)
+# length(df.for.imputation)
+# 
+# # Multiple Imputation of Study Variables
+# df.imputed = mice(df.for.imputation, m = 55, maxit = 25, print = F)
+# 
+# # Save Imputed Data
+# saveRDS(df.imputed, "data_imputed.Rds")
+```
+
+# Table 1
+
+```{r warning=F, error=F, message=F}
+# Select Table 1 Variables and Labels
+df.table1 <- df %>% 
+  select(admin_program, starts_with("tab1_")) %>%
+  setNames(c("Program", df.codebook %>% 
+                          filter(str_detect(variable, "tab1_")) %>% pull(label)))
+
+# Demographics by Program
+table1 <- CreateTableOne(data = df.table1, strata = "Program", test = T)
+table1.print <- print(table1, quote = F, noSpaces = T, printToggle = F, smd = F, pDigits = 2)
+table1.print %>% kbl() %>% kable_paper()
+# write.csv(table1.print, "table1.csv")
+
+# Totals
+table1.totals <- CreateTableOne(data = df.table1, test = F)
+table1.totals.print <- print(table1.totals, quote = F, noSpaces = T, printToggle = F, smd = F, pDigits = 2)
+table1.totals.print %>% kbl() %>% kable_paper()
+# write.csv(table1.totals.print, "table1.totals.csv")
+```
+
+# Table 2
+
+```{r warning=F, error=F, message=F}
+# Select Table 2 Variables and Labels
+df.table2 <- df %>% 
+  select(admin_program, starts_with("tab2_")) %>%
+  setNames(c("Program", df.codebook %>% 
+                          filter(str_detect(variable, "tab2_")) %>% pull(label)))
+  
+# Table 2 By Program
+table2 <- CreateTableOne(data = df.table2, strata = "Program", test = T)
+table2.print <- print(table2, quote = F, noSpaces = T, printToggle = F, smd = F, pDigits = 2)
+table2.print %>% kbl() %>% kable_paper()
+# write.csv(table2.print, "table2.csv")
+
+# Table 2 Totals
+table2.totals <- CreateTableOne(data = df.table2, test = F)
+table2.totals.print <- print(table2.totals, quote = F, noSpaces = T, printToggle = F, smd = F, pDigits = 2)
+table2.totals.print %>% kbl() %>% kable_paper()
+# write.csv(table2.totals.print, "table2.totals.csv")
+```
+
+# Functions for Bivariate Tests
+
+```{r warning=F, error=F, message=F}
+# Function for chi-square test, Cramer's V, Bonferroni post-hoc test, and bar plot
+easy_chi <- function(x_var, y_var, data) {
+
+  # Convert strings into symbols
+  x_var <- sym(x_var)
+  y_var <- sym(y_var)
+  
+  # Chi-square test and Cramer's V
+  cs <- chisq.test(pull(data, x_var), pull(data, y_var)) %>%
+    tidy() %>%
+    mutate(CramersV = lsr::cramersV(
+      pull(data, x_var), pull(data, y_var)))
+  
+  # Build caption
+  caption <- paste0("chi = ", round(cs$statistic, 2), "; p = ", 
+                    round(cs$p.value, 2), "; Cramer's V = ", 
+                    round(cs$CramersV, 2))
+  
+  # Calculate frequencies
+  freqs <- data %>%
+    select({{ x_var }}, {{ y_var }}) %>%
+    drop_na() %>%
+    count({{ x_var }}, {{ y_var }}) %>%
+    group_by({{ x_var }}) %>%
+    mutate(pct = n/sum(n)) %>%
+    ungroup() %>%
+    mutate(text = paste0(n, " (", percent(pct, accuracy = 0.1), ")"))
+  
+  # Plot
+  plot <- ggplot(freqs, aes(x = {{ x_var }}, y = pct, fill = {{ y_var }})) +
+    geom_bar(stat = "identity", position = "stack") +
+    geom_text(aes(label = text, group = {{ y_var }}), 
+      position = position_stack(vjust = 0.5),
+      size = 2.5,
+      color = "gray30") +
+    theme_classic() +
+    scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+    scale_fill_npg() +
+    labs(caption = caption) +
+    theme(legend.position = "top",
+    plot.title = element_text(size = 18),
+    plot.caption = element_text(size = 10),
+    text = element_text(size = 10))
+  
+  # Bonferroni post-hoc test
+  ph <- chisq.posthoc.test::chisq.posthoc.test(
+    table(select(data, {{ x_var }}, {{ y_var }})))
+  
+  # Return objects
+  return(list(plot = plot, freqs = freqs, ph = ph, 
+              chi = cs$statistic, chi.p = cs$p.value, cramers.v = cs$CramersV))
+}
+
+# for chi-square
+get_chi <- function(x_var, y_var, data, cell) {
+
+  # Convert strings into symbols and save strings
+  x_str <- x_var
+  y_str <- y_var
+  x_var <- sym(x_var)
+  y_var <- sym(y_var)
+  
+  # Chi-square test and Cramer's V
+  cs <- chisq.test(pull(data, x_var), pull(data, y_var)) %>%
+    tidy() %>%
+    mutate(CramersV = lsr::cramersV(
+      pull(data, x_var), pull(data, y_var)))
+  
+  # Return objects
+  return(tibble(IV = x_str, DV = y_str, stat = cs$statistic, 
+                p = cs$p.value, cramers.v = cs$CramersV,
+                method = "chisq", cell = cell))
+}
+
+# for fisher's exact
+get_fisher <- function(x_var, y_var, data, cell) {
+
+  # Convert strings into symbols and save strings
+  x_str <- x_var
+  y_str <- y_var
+  x_var <- sym(x_var)
+  y_var <- sym(y_var)
+  
+  # Fisher's exact test
+  ft <- fisher.test(pull(data, x_var), pull(data, y_var)) %>%
+    tidy()
+  
+  # Return objects
+  return(tibble(IV = x_str, DV = y_str, stat = NULL, p = ft$p.value, 
+                cramers.v = NULL, method = "fisher", cell = cell))
+}
+
+get_stat_wrapper <- function(x_var, y_var, data) {
+  num_levels <- data %>%
+    select(admin_id, x_var, y_var) %>%
+    drop_na() %>%
+    pivot_longer(-admin_id) %>%
+    group_by(name) %>%
+    summarize(n = n_distinct(value)) %>%
+    pull(n)
+  if(1 %in% num_levels) {
+    cell_size_str = NA
+    get_fisher(x_var, y_var, data, cell_size_str)
+  } else {
+    tmp <- chisq.test(pull(data, x_var), pull(data, y_var))
+    cell_size_str <- paste0(round(tmp$expected, 2), collapse = " ")
+    if(any(tmp$expected < 5)) { # if expected count is less than 5, user fisher's test
+      get_fisher(x_var, y_var, data, cell_size_str)
+    } else {
+      get_chi(x_var, y_var, data, cell_size_str)
+    }
+  }
+}
+```
+
+# Attrition Rate and Comparisons
+
+```{r}
+# Attrition Rate = (Completed Pre Only) / (Completed Pre) = 26/87 = 29.9%
+percent(nrow(df.pre.only) / (nrow(df) + nrow(df.pre.only)), accuracy = 0.1)
+
+# Compare Pre-Test Demographics Between Attritors (pre.a) and Completors (pre.c)
+pre.a <- df.pre.only %>% select(starts_with("analysis_pre_"))
+pre.c <- df %>% select(starts_with("analysis_pre_"))
+map2_dbl(
+  names(pre.a), names(pre.c),
+  ~ fisher.test(table(pre.a[.x]), table(pre.c[.y]))$p.value
+)
+```
+
+# Bivariate Tests With Original Data
+
+```{r warning=F, error=F, message=F}
+# Select Variables
+ivs <- rep(df %>% select(starts_with("analysis_pre_")) %>% names(),
+  times = df %>% select(starts_with("analysis_post_")) %>% names() %>% length()
+) # number of dvs
+dvs <- rep(df %>% select(starts_with("analysis_post_")) %>% names(),
+  each = df %>% select(starts_with("analysis_pre_")) %>% names() %>% length()
+) # number of ivs
+
+# Fit Models
+all_tests <- map2_dfr(ivs, dvs, get_stat_wrapper, data = df)
+
+# Print Results
+options(knitr.kable.NA = "")
+all_tests %>%
+  mutate(p.bonferroni = p.adjust(all_tests$p, method = "bonferroni")) %>%
+  arrange(p.bonferroni, p) %>%
+  mutate(across(starts_with("p"), ~ ifelse(. < .05, paste0(round(., 3), "*"), round(., 3)))) %>%
+  rowid_to_column(var = "#") %>%
+  kbl(digits = 3) %>%
+  kable_paper()
+```
+
+## Significant Result
+
+```{r warning=F, error=F, message=F}
+# Check Assumptions for Chi-Square Test
+any(chisq.test(df$analysis_pre_01_vol, df$analysis_post_10_effective)$expected < 5)
+
+# Assumption Not Met, Therefore Use Fisher's Test
+# See above table for Bonferroni adjusted p-value
+fisher.test(df$analysis_pre_01_vol, df$analysis_post_10_effective)
+
+# Cramer's V
+lsr::cramersV(df$analysis_pre_01_vol, df$analysis_post_10_effective) # Cramer's V = 0.63
+
+# Plot Significant Result
+easy_chi("analysis_pre_01_vol", "analysis_post_10_effective", df)
+```
+
+# Bivariate Tests With Imputed Data
+
+```{r warning=F, error=F, message=F}
+# Select Variables
+ivs <- rep(df %>% select(starts_with("analysis_pre_")) %>% names(), 
+           times = df %>% select(starts_with("analysis_post_")) %>% names() %>% length()) # number of dvs
+dvs <- rep(df %>% select(starts_with("analysis_post_")) %>% names(),
+           each = df %>% select(starts_with("analysis_pre_")) %>% names() %>% length) # number of ivs
+
+# Function to fit chi-square models and pool results
+# Code from https://nerler.github.io/EP16_Multiple_Imputation/slide/08_analysis_and_pooling.pdf
+get_chisq_pooled <- function(iv, dv) {
+  m <- eval(parse(text = glue("with(data = df.imputed, exp = chisq.test(table({iv} , {dv})))")))
+  dfs <- m$analyses[[1]]$parameter
+  stat <- sapply(m$analyses, "[[", 'statistic')
+  m.result <- miceadds::micombine.chisquare(dk = stat, df = dfs, display = F)
+  p <- m.result[2]
+  return(tibble(IV = iv, DV = dv, p = p))
+}
+
+# Fit Models
+chisq_ps_imputed <- map2_dfr(ivs, dvs, get_chisq_pooled)
+
+# Print Results
+chisq_ps_imputed %>%
+  rowid_to_column(var = "#") %>%
+  mutate(p.bonferroni = p.adjust(chisq_ps_imputed$p, method = "bonferroni")) %>%
+  arrange(p.bonferroni, p) %>%
+  mutate(across(starts_with("p"), ~ifelse(. < .05, paste0(round(., 2), "*"), round(., 2)))) %>%
+  kbl(digits = 2) %>%
+  kable_paper()
+```
+
+# Recoded Open-Ended Responses
+
+```{r}
+get_openended <- function(var) {
+  df %>%
+    count({{ var }}) %>%
+    mutate(pct = n/sum(n)) %>%
+    arrange(desc(pct)) %>%
+    mutate(pct_f = percent(pct, accuracy = .1)) %>%
+    kbl(digit = 3) %>%
+    kable_paper()
+}
+get_openended(openended_pre_01_concerns)
+get_openended(openended_post_01_negatives)
+get_openended(openended_post_02_well)
+get_openended(openended_post_03_notwell)
+```
